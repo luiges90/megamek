@@ -518,12 +518,6 @@ public class ChatLounge extends AbstractPhaseDisplay
                 strTreeView = "";
             }            
 
-            if ( !client.game.getOptions().booleanOption("pilot_advantages") ) {
-              entity.getCrew().clearAdvantages();
-            }
-            
-            int crewAdvCount = entity.getCrew().countAdvantages();
-            
             // Handle the "Blind Drop" option.
             if ( !entity.getOwner().equals(client.getLocalPlayer()) &&
                  client.game.getOptions().booleanOption("blind_drop") )
@@ -540,14 +534,14 @@ public class ChatLounge extends AbstractPhaseDisplay
             
                 lisEntities.add(entity.getOwner().getName() 
                 + " (" + entity.getCrew().getGunnery()
-                + "/" + entity.getCrew().getPiloting() + " pilot" + (crewAdvCount > 0 ? " <" + crewAdvCount + " advs>" : "") + ")"
+                + "/" + entity.getCrew().getPiloting() + " pilot)"
                 + " Class: " + weight);
             }
             else
             {
                 lisEntities.add(strTreeSet + entity.getDisplayName()
                 + " (" + entity.getCrew().getGunnery()
-                + "/" + entity.getCrew().getPiloting() + " pilot" + (crewAdvCount > 0 ? " <" + crewAdvCount + " advs>" : "") + ")"
+                + "/" + entity.getCrew().getPiloting() + " pilot)"
                 + " BV=" + entity.calculateBattleValue() + strTreeView);
             }
             
@@ -702,7 +696,6 @@ public class ChatLounge extends AbstractPhaseDisplay
         boolean editable = entity.getOwnerId() == client.getLocalPlayer().getId();
         // display dialog
         CustomMechDialog cmd = new CustomMechDialog(client, entity, editable);
-        cmd.refreshOptions();
         cmd.show();
         if (editable && cmd.isOkay()) {
             // send changes
@@ -720,9 +713,9 @@ public class ChatLounge extends AbstractPhaseDisplay
         Entity entity = client.game.getEntity(entityCorrespondance[lisEntities.getSelectedIndex()]);
         MechView mechView = new MechView(entity);
         TextArea ta = new TextArea();
-  ta.setEditable(false);
-  ta.setFont(new Font("Monospaced", Font.PLAIN, 12));
-  ta.setText(mechView.getMechReadout());
+	ta.setEditable(false);
+	ta.setFont(new Font("Monospaced", Font.PLAIN, 12));
+	ta.setText(mechView.getMechReadout());
         final Dialog dialog = new Dialog(client.frame, "Mech Quick View", false);
         Button btn = new Button("Ok");
         dialog.add("South", btn);

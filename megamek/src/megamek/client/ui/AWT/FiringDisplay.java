@@ -23,7 +23,7 @@ import megamek.common.*;
 import megamek.common.actions.*;
 
 public class FiringDisplay 
-    extends StatusBarPhaseDisplay
+    extends AbstractPhaseDisplay
     implements BoardListener, GameListener, ActionListener,
     KeyListener, ItemListener
 {
@@ -31,6 +31,12 @@ public class FiringDisplay
     
     // parent game
     public Client client;
+    
+    // displays
+    private Label             labStatus;
+    private Panel             panStatus;
+    private Button            butDisplay;
+    private Button            butMap;
     
     // buttons
     private Container        panButtons;
@@ -83,7 +89,7 @@ public class FiringDisplay
         // fire
         attacks = new Vector();
 
-        setupStatusBar("Waiting to begin Firing phase...");
+        setupStatusBar();
         
         butFire = new Button("Fire");
         butFire.addActionListener(this);
@@ -179,6 +185,40 @@ public class FiringDisplay
         add(comp);
         comp.addKeyListener(this);
     }
+    
+    /**
+     * Sets up the status bar with toggle buttons for the mek display and map.
+     * TODO: remove copy/pastiness with deploy, move, fire & phys panels
+     */
+    private void setupStatusBar() {
+        panStatus = new Panel();
+
+        labStatus = new Label("Waiting to begin Firing phase...", Label.CENTER);
+        
+        butDisplay = new Button("D");
+        butDisplay.addActionListener(this);
+        
+        butMap = new Button("M");
+        butMap.addActionListener(this);
+        
+        // layout
+        GridBagLayout gridbag = new GridBagLayout();
+        GridBagConstraints c = new GridBagConstraints();
+        panStatus.setLayout(gridbag);
+            
+        c.insets = new Insets(0, 1, 0, 1);
+        c.fill = GridBagConstraints.HORIZONTAL;
+        c.weightx = 1.0;    c.weighty = 0.0;
+        gridbag.setConstraints(labStatus, c);
+        panStatus.add(labStatus);
+        
+        c.weightx = 0.0;    c.weighty = 0.0;
+        gridbag.setConstraints(butDisplay, c);
+        panStatus.add(butDisplay);
+        
+        c.gridwidth = GridBagConstraints.REMAINDER;
+        panStatus.add(butMap);
+    }
 
     private void setupButtonPanel() {
         panButtons.removeAll();
@@ -230,15 +270,15 @@ public class FiringDisplay
             // ASSUMPTION: there will always be *at least one* entity on map.
             if ( null == ce().getPosition() ) {
 
-    // Walk through the list of entities for this player.
-    for ( int nextId = client.getNextEntityNum(en);
-          nextId != en;
-          nextId = client.getNextEntityNum(nextId) ) {
+		// Walk through the list of entities for this player.
+		for ( int nextId = client.getNextEntityNum(en);
+		      nextId != en;
+		      nextId = client.getNextEntityNum(nextId) ) {
 
-        if (null != client.game.getEntity(nextId).getPosition()) {
-      this.cen = nextId;
-      break;
-        }
+		    if (null != client.game.getEntity(nextId).getPosition()) {
+			this.cen = nextId;
+			break;
+		    }
 
                 } // Check the player's next entity.
 
@@ -688,9 +728,9 @@ public class FiringDisplay
             
             if(client.isMyTurn()) {
                 beginMyTurn();
-                setStatusBarText("It's your turn to fire.");
+                labStatus.setText("It's your turn to fire.");
             } else {
-                setStatusBarText("It's " + ev.getPlayer().getName() + "'s turn to fire.");
+                labStatus.setText("It's " + ev.getPlayer().getName() + "'s turn to fire.");
             }
         }
     }
@@ -714,9 +754,13 @@ public class FiringDisplay
     // ActionListener
     //
     public void actionPerformed(ActionEvent ev) {
-        if ( statusBarActionPerformed(ev, client) )
-          return;
-          
+        if (ev.getSource() == butDisplay) {
+            client.toggleDisplay();
+        }
+        else if (ev.getSource() == butMap) {
+            client.toggleMap();
+        }
+        
         if (!client.isMyTurn()) {
             return;
         }

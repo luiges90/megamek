@@ -22,13 +22,19 @@ import java.util.*;
 import megamek.common.*;
 
 public class DeploymentDisplay 
-    extends StatusBarPhaseDisplay
+    extends AbstractPhaseDisplay
     implements BoardListener,  ActionListener,
     KeyListener, GameListener
 {    
     // parent game
     public Client client;
     
+    // displays
+    private Label             labStatus;
+    private Panel             panStatus;
+    private Button            butDisplay;
+    private Button            butMap;
+
     // buttons
     private Panel             panButtons;
     
@@ -55,7 +61,7 @@ public class DeploymentDisplay
 
         client.game.board.addBoardListener(this);
 
-        setupStatusBar("Waiting to begin Deployment phase...");
+        setupStatusBar();
 
 
         butTurn = new Button("Turn");
@@ -124,6 +130,40 @@ public class DeploymentDisplay
         comp.addKeyListener(this);
     }
         
+    /**
+     * Sets up the status bar with toggle buttons for the mek display and map.
+     * TODO: remove copy/pastiness with deploy, move, fire & phys panels
+     */
+    private void setupStatusBar() {
+        panStatus = new Panel();
+
+        labStatus = new Label("Waiting to begin Deployment phase...", Label.CENTER);
+        
+        butDisplay = new Button("D");
+        butDisplay.addActionListener(this);
+        
+        butMap = new Button("M");
+        butMap.addActionListener(this);
+        
+        // layout
+        GridBagLayout gridbag = new GridBagLayout();
+        GridBagConstraints c = new GridBagConstraints();
+        panStatus.setLayout(gridbag);
+            
+        c.insets = new Insets(0, 1, 0, 1);
+        c.fill = GridBagConstraints.HORIZONTAL;
+        c.weightx = 1.0;    c.weighty = 0.0;
+        gridbag.setConstraints(labStatus, c);
+        panStatus.add(labStatus);
+        
+        c.weightx = 0.0;    c.weighty = 0.0;
+        gridbag.setConstraints(butDisplay, c);
+        panStatus.add(butDisplay);
+        
+        c.gridwidth = GridBagConstraints.REMAINDER;
+        panStatus.add(butMap);
+    }
+
     /**
      * Selects an entity for deployment
      */
@@ -266,9 +306,9 @@ public class DeploymentDisplay
 
         if (client.isMyTurn()) {
             beginMyTurn();
-            setStatusBarText("It's your turn to deploy.");
+            labStatus.setText("It's your turn to deploy.");
         } else {
-            setStatusBarText("It's " + ev.getPlayer().getName() + 
+            labStatus.setText("It's " + ev.getPlayer().getName() + 
                     "'s turn to deploy.");
         }
     }
@@ -290,9 +330,13 @@ public class DeploymentDisplay
     // ActionListener
     //
     public void actionPerformed(ActionEvent ev) {
-        if ( statusBarActionPerformed(ev, client) )
-          return;
-          
+        if (ev.getSource() == butDisplay) {
+            client.toggleDisplay();
+        }
+        else if (ev.getSource() == butMap) {
+            client.toggleMap();
+        }
+        
         if (!client.isMyTurn()) {
             // odd...
             return;

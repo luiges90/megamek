@@ -688,9 +688,6 @@ implements Runnable {
             
             // reset damage this phase
             entity.damageThisPhase = 0;
-            entity.engineHitsThisRound = 0;
-            entity.rolledForEngineExplosion = false;
-            entity.dodging = false;
             
             // reset done to false
             entity.setDone(!entity.isActive());
@@ -907,7 +904,7 @@ implements Runnable {
             int remaining = game.infantryLeft(playerId);
             int moreInfTurns = Math.min(Game.INF_MOVE_MULTI - 1, remaining); 
             for (int i = 0; i < moreInfTurns; i++) {
-    
+		
                 GameTurn newTurn = new GameTurn.OnlyInfantryTurn(playerId);
                 game.insertNextTurn(newTurn);
                 turnsChanged = true;
@@ -2086,7 +2083,6 @@ implements Runnable {
         Hex prevHex = null;
         final boolean isInfantry = (entity instanceof Infantry);
         AttackAction charge = null;
-        PilotingRollData rollTarget;
         
         // Compile the move
         Compute.compile(game, entity.getId(), md);
@@ -2099,7 +2095,15 @@ implements Runnable {
             }
         }
         
-        overallMoveType = md.getLastStepMovementType();
+        // get last step's movement type
+        for (final Enumeration i = md.getSteps(); i.hasMoreElements();) {
+            final MovementData.Step step = (MovementData.Step)i.nextElement();
+            if (step.getMovementType() == Entity.MOVE_ILLEGAL) {
+                break;
+            } else {
+                overallMoveType = step.getMovementType();
+            }
+        }
         
         // iterate through steps
         firstStep = true;
@@ -2117,17 +2121,17 @@ implements Runnable {
             }
             
             // check piloting skill for getting up
-            rollTarget = entity.checkGetUp(step);
-            if (rollTarget.getValue() != TargetRoll.CHECK_FALSE) {
+            if (step.getType() == MovementData.STEP_GET_UP) {
                 entity.heatBuildup += 1;
                 entity.setProne(false);
                 wasProne = false;
-                doSkillCheckInPlace(entity, rollTarget);
+                doSkillCheckInPlace(entity, new PilotingRollData(entity.getId(), 0, "getting up"), true);
             } else if (firstStep) {
                 // running with destroyed hip or gyro needs a check
-                rollTarget = entity.checkRunningWithDamage(overallMoveType);
-                if (rollTarget.getValue() != TargetRoll.CHECK_FALSE) {
-                    doSkillCheckInPlace(entity, rollTarget);
+                if (overallMoveType == Entity.MOVE_RUN && !entity.isProne()
+                && (entity.getDestroyedCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_GYRO,Mech.LOC_CT) > 0
+                || entity.hasHipCrit())) {
+                    doSkillCheckInPlace(entity, new PilotingRollData(entity.getId(), 0, "running with damaged hip actuator or gyro"), false);
                 }
                 firstStep = false;
             }
@@ -2181,21 +2185,36 @@ implements Runnable {
             final Hex curHex = game.board.getHex(curPos);
 
             // Check for skid.
-            rollTarget = entity.checkSkid(moveType, prevHex, overallMoveType,
-                                          prevStep, prevFacing, curFacing,
-                                          lastPos, curPos, isInfantry,
-                                          distance);
-            if (rollTarget.getValue() != TargetRoll.CHECK_FALSE) {
+            // TODO: add check for elevation of pavement, road,
+            //       or bridge matches entity elevation.
+            /* Bug 754610: Revert fix for bug 702735.
+               && ( prevHex.contains(Terrain.PAVEMENT) ||
+                    prevHex.contains(Terrain.ROAD) ||
+                    prevHex.contains(Terrain.BRIDGE) )
+            */
+            if ( moveType != Entity.MOVE_JUMP
+                 && prevHex != null
+                 && prevStep.isOnPavement()
+                 && overallMoveType == Entity.MOVE_RUN
+                 && prevFacing != curFacing
+                 && !lastPos.equals(curPos)
+                 && !isInfantry ) {
+
                 // Have an entity-meaningful PSR message.
                 boolean psrPassed = true;
+                PilotingRollData psr = null;
                 if ( entity instanceof Mech ) {
+                    psr = new PilotingRollData
+                        (entity.getId(), getMovementPSRModifier(distance),
+                         "running & turning on pavement");
                     psrPassed = doSkillCheckWhileMoving( entity, lastPos,
-                                                          lastPos, rollTarget,
-                                                          true );
+                                                         lastPos, psr );
                 } else {
+                    psr = new PilotingRollData
+                        (entity.getId(), getMovementPSRModifier(distance),
+                         "reckless driving on pavement");
                     psrPassed = doSkillCheckWhileMoving( entity, lastPos,
-                                                          lastPos, rollTarget,
-                                                          false );
+                                                         lastPos, psr, false );
                 }
                 // Does the entity skid?
                 if ( !psrPassed ){
@@ -2306,8 +2325,9 @@ implements Runnable {
                         // Have skidding units suffer falls.
                         else if ( curElevation > nextElevation + 1 ) {
                             doEntityFallsInto( entity, curPos, nextPos,
-                                               entity.getBasePilotingRoll() );
-                            
+                                               Compute.getBasePilotingRoll
+                                               (game, entity.getId()) );
+
                             // Stay in the current hex and stop skidding.
                             break;
                         }
@@ -2592,10 +2612,10 @@ implements Runnable {
             } // End need-skid-psr
 
             // check if we've moved into rubble
-            rollTarget = entity.checkRubbleMove(step, curHex, lastPos, curPos);
-            if (rollTarget.getValue() != TargetRoll.CHECK_FALSE) {
-                doSkillCheckWhileMoving(entity, lastPos, curPos, rollTarget,
-                                         true);
+            if (!lastPos.equals(curPos)
+            && step.getMovementType() != Entity.MOVE_JUMP
+            && curHex.levelOf(Terrain.RUBBLE) > 0) {
+                doSkillCheckWhileMoving(entity, lastPos, curPos, new PilotingRollData(entity.getId(), 0, "entering Rubble"));
             }
             
             // check to see if we've moved OUT of fire and we are a mech
@@ -2619,14 +2639,45 @@ implements Runnable {
             }   
 
             // check if we've moved into water
-            rollTarget = entity.checkWaterMove(step, curHex, lastPos, curPos,
-                                               isPavementStep);
-            if (rollTarget.getValue() != TargetRoll.CHECK_FALSE) {
-                doSkillCheckWhileMoving(entity, lastPos, curPos, rollTarget,
-                                         true);
-                if (curHex.levelOf(Terrain.WATER) > 1) {
+            if (!lastPos.equals(curPos)
+                && step.getMovementType() != Entity.MOVE_JUMP
+                && curHex.levelOf(Terrain.WATER) > 0
+                && entity.getMovementType() != Entity.MovementType.HOVER
+                && !isPavementStep) {
+                if (curHex.levelOf(Terrain.WATER) == 1) {
+                    doSkillCheckWhileMoving(entity, lastPos, curPos, new PilotingRollData(entity.getId(), -1, "entering Depth 1 Water"));
+                } else if (curHex.levelOf(Terrain.WATER) == 2) {
+                    doSkillCheckWhileMoving(entity, lastPos, curPos, new PilotingRollData(entity.getId(), 0, "entering Depth 2 Water"));
                     // Any swarming infantry will be destroyed.
-                    drownSwarmer(entity, curPos);
+                    final int swarmerId = entity.getSwarmAttackerId();
+                    if ( Entity.NONE != swarmerId ) {
+                        final Entity swarmer = game.getEntity( swarmerId );
+                        swarmer.setSwarmTargetId( Entity.NONE );
+                        entity.setSwarmAttackerId( Entity.NONE );
+                        swarmer.setPosition( curPos );
+                        phaseReport.append( "   The swarming unit, " )
+                            .append( swarmer.getShortName() )
+                            .append( ", drowns!\n" )
+                            .append( destroyEntity(swarmer,
+                                                   "a watery grave", false) );
+                        entityUpdate( swarmerId );
+                    }
+                } else {
+                    doSkillCheckWhileMoving(entity, lastPos, curPos, new PilotingRollData(entity.getId(), 1, "entering Depth 3+ Water"));
+                    // Any swarming infantry will be destroyed.
+                    final int swarmerId = entity.getSwarmAttackerId();
+                    if ( Entity.NONE != swarmerId ) {
+                        final Entity swarmer = game.getEntity( swarmerId );
+                        swarmer.setSwarmTargetId( Entity.NONE );
+                        entity.setSwarmAttackerId( Entity.NONE );
+                        swarmer.setPosition( curPos );
+                        phaseReport.append( "   The swarming unit, " )
+                            .append( swarmer.getShortName() )
+                            .append( ", drowns!\n" )
+                            .append( destroyEntity(swarmer,
+                                                   "a watery grave", false) );
+                        entityUpdate( swarmerId );
+                    }
                 }
                 
                 // check for inferno wash-off
@@ -2693,9 +2744,12 @@ implements Runnable {
             }
 
             // Handle non-infantry moving into a building.
-            if (entity.checkMovementInBuilding(lastPos, curPos, step,
-                                               curHex, prevHex)) {
-                
+            if ( !lastPos.equals(curPos) &&
+                 step.getMovementType() != Entity.MOVE_JUMP &&
+                 ( curHex.contains(Terrain.BUILDING) ||
+                   (prevHex != null && prevHex.contains(Terrain.BUILDING)) ) &&
+                 !(entity instanceof Infantry) ) {
+
                 // Get the building being exited.
                 // TODO: allow units to climb on top of buildings.
                 Building bldgExited = game.board.getBuildingAt( lastPos );
@@ -2767,24 +2821,10 @@ implements Runnable {
             // dropping prone intentionally?
             if (step.getType() == MovementData.STEP_GO_PRONE) {
                 mpUsed = step.getMpUsed();
-                rollTarget = entity.checkDislodgeSwarmers();
-                if (rollTarget.getValue() == TargetRoll.CHECK_FALSE) {
-                    // Not being swarmed
-                    entity.setProne(true);
-                    // check to see if we washed off infernos
-                    checkForWashedInfernos(entity, curPos);
-                    break;
-                } else {
-                    // Being swarmed
-                    entity.setPosition(curPos);
-                    if (doDislodgeSwarmerSkillCheck(entity, rollTarget, curPos)) {
-                        // Entity falls
-                        curFacing = entity.getFacing();
-                        curPos = entity.getPosition();
-                        fellDuringMovement = true;
-                        break;
-                    }
-                }
+                entity.setProne(true);
+                // check to see if we washed off infernos
+                checkForWashedInfernos(entity, curPos);
+                break;
             }
             
             // update lastPos, prevStep, prevFacing & prevHex
@@ -2810,19 +2850,45 @@ implements Runnable {
         // but the danger isn't over yet!  landing from a jump can be risky!
         if (overallMoveType == Entity.MOVE_JUMP && !entity.isMakingDfa()) {
             // check for damaged criticals
-            rollTarget = entity.checkLandingWithDamage();
-            if (rollTarget.getValue() != TargetRoll.CHECK_FALSE) {
-                doSkillCheckInPlace(entity, rollTarget);
+            if (entity.getDestroyedCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_GYRO,Mech.LOC_CT) > 0 || entity.hasLegActuatorCrit()) {
+                doSkillCheckInPlace(entity, new PilotingRollData(entity.getId(), 0, "landing with damaged leg actuator or gyro"), false);
             }
             // jumped into water?
             int waterLevel = game.board.getHex(curPos).levelOf(Terrain.WATER);
-            rollTarget = entity.checkWaterMove(waterLevel);
-            if (rollTarget.getValue() != TargetRoll.CHECK_FALSE) {
-                doSkillCheckInPlace(entity, rollTarget);
-            }
-            if (waterLevel > 1) {
+            if (waterLevel == 1) {
+                doSkillCheckInPlace(entity, new PilotingRollData(entity.getId(), -1, "entering Depth 1 Water"), false);
+            } else if (waterLevel == 2) {
+                doSkillCheckInPlace(entity, new PilotingRollData(entity.getId(), 0, "entering Depth 2 Water"), false);
                 // Any swarming infantry will be destroyed.
-                drownSwarmer(entity, curPos);
+                final int swarmerId = entity.getSwarmAttackerId();
+                if ( Entity.NONE != swarmerId ) {
+                    final Entity swarmer = game.getEntity( swarmerId );
+                    swarmer.setSwarmTargetId( Entity.NONE );
+                    entity.setSwarmAttackerId( Entity.NONE );
+                    swarmer.setPosition( curPos );
+                    phaseReport.append( "   The swarming unit, " )
+                        .append( swarmer.getShortName() )
+                        .append( ", drowns!\n" )
+                        .append( destroyEntity(swarmer,
+                                               "a watery grave", false) );
+                    entityUpdate( swarmerId );
+                }
+            } else if (waterLevel >= 3) {
+                doSkillCheckInPlace(entity, new PilotingRollData(entity.getId(), 1, "entering Depth 3+ Water"), false);
+                // Any swarming infantry will be destroyed.
+                final int swarmerId = entity.getSwarmAttackerId();
+                if ( Entity.NONE != swarmerId ) {
+                    final Entity swarmer = game.getEntity( swarmerId );
+                    swarmer.setSwarmTargetId( Entity.NONE );
+                    entity.setSwarmAttackerId( Entity.NONE );
+                    swarmer.setPosition( curPos );
+                    phaseReport.append( "   The swarming unit, " )
+                        .append( swarmer.getShortName() )
+                        .append( ", drowns!\n" )
+                        .append( destroyEntity(swarmer,
+                                               "a watery grave", false) );
+                    entityUpdate( swarmerId );
+                }
             }
 
             // If the entity is being swarmed, jumping may dislodge the fleas.
@@ -2830,7 +2896,7 @@ implements Runnable {
             if ( Entity.NONE != swarmerId ) {
                 final Entity swarmer = game.getEntity( swarmerId );
                 final PilotingRollData roll =
-                    entity.getBasePilotingRoll();
+                    Compute.getBasePilotingRoll(game, entity.getId());
 
                 // Add a +4 modifier.
                 roll.addModifier( 4, "dislodge swarming infantry" );
@@ -2943,23 +3009,6 @@ implements Runnable {
         }
     }
     
-    private void drownSwarmer(Entity entity, Coords pos) {
-        // Any swarming infantry will be destroyed.
-        final int swarmerId = entity.getSwarmAttackerId();
-        if ( Entity.NONE != swarmerId ) {
-            final Entity swarmer = game.getEntity( swarmerId );
-            swarmer.setSwarmTargetId( Entity.NONE );
-            entity.setSwarmAttackerId( Entity.NONE );
-            swarmer.setPosition( pos );
-            phaseReport.append( "   The swarming unit, " )
-                .append( swarmer.getShortName() )
-                .append( ", drowns!\n" )
-                .append( destroyEntity(swarmer,
-                                       "a watery grave", false) );
-            entityUpdate( swarmerId );
-        }
-    }
-    
     /**
      * Checks to see if we may have just washed off infernos.  Call after
      * a step which may have done this.
@@ -3015,23 +3064,30 @@ implements Runnable {
     }
 
     /**
-     * Do a piloting skill check while standing still (during the
-     *  movement phase).
+     * Do a piloting skill check while standing still (during the movement phase).
+     * We have a special case for getting up because quads need not roll to stand
+     * if they have no damaged legs.  If a quad is short a gyro, however....
      */
-    private void doSkillCheckInPlace(Entity entity, PilotingRollData roll) {
-        if (roll.getValue() == TargetRoll.AUTOMATIC_SUCCESS) {
-            return;
-        }
-
+    private void doSkillCheckInPlace(Entity entity, PilotingRollData reason, boolean gettingUp) {
         // non-mechs should never get here
         if (! (entity instanceof Mech) || entity.isProne()) {
             return;
         }
-
+        
+        if (gettingUp && !entity.needsRollToStand() && (entity.getDestroyedCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_GYRO,Mech.LOC_CT) < 2)) {
+            phaseReport.append("\n" ).append( entity.getDisplayName() ).append( " does not need to make "
+            ).append( "a piloting skill check to stand up because it has all four of its legs.");
+            return;
+        }
+        final PilotingRollData roll = Compute.getBasePilotingRoll(game, entity.getId());
+        
+        // append the reason modifier
+        roll.append(reason);
+        
         // okay, print the info
-        phaseReport.append("\n" ).append( entity.getDisplayName() )
-            .append( " must make a piloting skill check (" )
-            .append( roll.getLastPlainDesc() ).append( ")" ).append( ".\n");
+        phaseReport.append("\n" ).append( entity.getDisplayName()
+        ).append( " must make a piloting skill check (" ).append( reason.getPlainDesc() ).append( ")"
+        ).append( ".\n");
         // roll
         final int diceRoll = Compute.d6(2);
         phaseReport.append("Needs " ).append( roll.getValueAsString()
@@ -3043,26 +3099,32 @@ implements Runnable {
         } else {
             phaseReport.append("succeeds.\n");
         }
+        
     }
+    
+    /**
+     * Do a piloting skill check for a Mech while it is moving.
+     * Failing this roll will cause the Mech to fall.
+     *
+     * @param   entity - the <code>Entity</code> object for the Mech.
+     * @param   src - the <code>Coords</code> the Mech is moving from.
+     * @param   dest - the <code>Coords</code> the Mech is moving to.
+     *          This value can be the same as src for in-place checks.
+     * @param   reason - the <code>PilotingRollData</code> that is causing
+     *          this check.
+     * @return <code>true</code> if the pilot passes the skill check.
+     */
+    private boolean doSkillCheckWhileMoving( Entity entity,
+                                             Coords src,
+                                             Coords dest,
+                                             PilotingRollData reason ) {
 
-    private boolean doDislodgeSwarmerSkillCheck(Entity entity, PilotingRollData roll, Coords curPos) {
-        // okay, print the info
-        phaseReport.append("\n" ).append( entity.getDisplayName() )
-            .append( " must make a piloting skill check (" )
-            .append( roll.getLastPlainDesc() ).append( ")" ).append( ".\n");
-        // roll
-        final int diceRoll = Compute.d6(2);
-        phaseReport.append("Needs " ).append( roll.getValueAsString()
-        ).append( " [" ).append( roll.getDesc() ).append( "]"
-        ).append( ", rolls " ).append( diceRoll ).append( " : ");
-        if (diceRoll < roll.getValue() || true) {
-            phaseReport.append("fails.\n");
-            return false;
-        } else {
-            phaseReport.append("succeeds.\n");
-            doEntityFallsInto(entity, curPos, curPos, roll);
+        // Non mechs should never get here.
+        if ( !(entity instanceof Mech) ) {
             return true;
         }
+
+        return doSkillCheckWhileMoving( entity, src, dest, reason, true );
     }
 
     /**
@@ -3081,10 +3143,16 @@ implements Runnable {
     private boolean doSkillCheckWhileMoving( Entity entity,
                                              Coords src,
                                              Coords dest,
-                                             PilotingRollData roll,
+                                             PilotingRollData reason,
                                              boolean isFallRoll ) {
         boolean result = true;
+        
+        final PilotingRollData roll =
+            Compute.getBasePilotingRoll(game, entity.getId());
         boolean fallsInPlace;
+        
+        // append the reason modifier
+        roll.append(reason);
         
         // Start the info for this roll.
         phaseReport.append("\n" )
@@ -3106,7 +3174,7 @@ implements Runnable {
 
         // Finish the info.
         phaseReport.append( " (" )
-            .append( roll.getLastPlainDesc() )
+            .append( reason.getPlainDesc() )
             .append( ")" )
             .append( ".\n" );
 
@@ -3175,11 +3243,6 @@ implements Runnable {
         // hmmm... somebody there... problems.
         if (fallElevation >= 2) {
             // accidental death from above
-            // TODO : code me!!!
-            System.err.println( "MegaMek should perform an accidental DFA for "
-                                + entity.getShortName() +
-                                " to land on " + violation.getShortName()
-                                + " but it doesn't.  We're working on it." );
         } else {
             // damage as normal
             doEntityFall(entity, dest, fallElevation, roll);
@@ -3236,7 +3299,7 @@ implements Runnable {
                 ).append( fallElevation ).append( " levels into hex "
                 ).append( dest.getBoardNum() ).append( ".\n");
                 // only given a modifier, so flesh out into a full piloting roll
-                PilotingRollData pilotRoll = entity.getBasePilotingRoll();
+                PilotingRollData pilotRoll = Compute.getBasePilotingRoll(game, entity.getId());
                 if (roll != null) {
                     pilotRoll.append(roll);
                 }
@@ -3293,7 +3356,7 @@ implements Runnable {
                 
                 // attacker falls as normal, on his back
                 // only given a modifier, so flesh out into a full piloting roll
-                PilotingRollData pilotRoll = entity.getBasePilotingRoll();
+                PilotingRollData pilotRoll = Compute.getBasePilotingRoll(game, entity.getId());
                 pilotRoll.append(roll);
                 doEntityFall(entity, dest, fallElevation, 3, pilotRoll);
                 
@@ -3435,8 +3498,6 @@ implements Runnable {
                 PushAttackAction paa = (PushAttackAction)ea;
                 entity.setDisplacementAttack(paa);
                 game.addCharge(paa);
-            } else if (ea instanceof DodgeAction) {
-              entity.dodging = true;
             } else {
                 // add to the normal attack list.
                 game.addAction(ea);
@@ -5144,7 +5205,7 @@ implements Runnable {
         }
 
         if (te.getMovementType() == Entity.MovementType.BIPED || te.getMovementType() == Entity.MovementType.QUAD) {
-          game.addPSR(new PilotingRollData(te.getId(), getKickPushPSRMod(ae, te, 0), "was kicked"));
+            game.addPSR(new PilotingRollData(te.getId(), 0, "was kicked"));
         }
         
         phaseReport.append("\n");
@@ -5287,7 +5348,7 @@ implements Runnable {
 
         // Thrash attacks cause PSRs.  Failed PSRs cause falling damage.
         // This fall damage applies even though the Thrashing Mek is prone.
-        PilotingRollData roll = ae.getBasePilotingRoll();
+        PilotingRollData roll = Compute.getBasePilotingRoll(game, ae.getId());
         roll.addModifier( 0, "thrashing at infantry" );
         phaseReport.append( ae.getDisplayName() )
             .append( " must make a piloting skill check (" )
@@ -5468,8 +5529,7 @@ implements Runnable {
             phaseReport.append("succeeds: target is pushed into hex "
             ).append( dest.getBoardNum()
             ).append( "\n");
-            
-            doEntityDisplacement(te, src, dest, new PilotingRollData(te.getId(), getKickPushPSRMod(ae, te, 0), "was pushed"));
+            doEntityDisplacement(te, src, dest, new PilotingRollData(te.getId(), 0, "was pushed"));
             
             // if push actually moved the target, attacker follows thru
             if (!te.getPosition().equals(src)) {
@@ -5486,7 +5546,7 @@ implements Runnable {
                 ae.setPosition(src);
             } else {
                 phaseReport.append("succeeds, but target can't be moved.\n");
-                game.addPSR(new PilotingRollData(te.getId(), getKickPushPSRMod(ae, te, 0), "was pushed"));
+                game.addPSR(new PilotingRollData(te.getId(), 0, "was pushed"));
             }
         }
         
@@ -5731,7 +5791,7 @@ implements Runnable {
             phaseReport.append("    Death from above deals no damage as the target has been destroyed.\n");
             if (ae.isProne()) {
                 // attacker prone during weapons phase
-                doEntityFall(ae, daa.getTargetPos(), 2, 3, ae.getBasePilotingRoll());
+                doEntityFall(ae, daa.getTargetPos(), 2, 3, Compute.getBasePilotingRoll(game, ae.getId()));
             } else {
                 // same effect as successful DFA
                 doEntityDisplacement(ae, ae.getPosition(), daa.getTargetPos(), new PilotingRollData(ae.getId(), 4, "executed death from above"));
@@ -5776,7 +5836,7 @@ implements Runnable {
             if (targetDest != null) {
                 // attacker falls into destination hex
                 phaseReport.append(ae.getDisplayName() ).append( " falls into hex " ).append( dest.getBoardNum() ).append( ".\n");
-                doEntityFall(ae, dest, 2, 3, ae.getBasePilotingRoll());
+                doEntityFall(ae, dest, 2, 3, Compute.getBasePilotingRoll(game, ae.getId()));
 
                 // move target to preferred hex
                 doEntityDisplacement(te, dest, targetDest, null);
@@ -5859,56 +5919,7 @@ implements Runnable {
         // HACK: to avoid automatic falls, displace from dest to dest
         doEntityDisplacement(ae, dest, dest, new PilotingRollData(ae.getId(), 4, "executed death from above"));
     }
-
-    private int getKickPushPSRMod(Entity attacker, Entity target, int def) {    
-      int mod = def;
-      
-      if ( game.getOptions().booleanOption("maxtech_physical_psr") ) {
-        int attackerMod = 0;
-        int targetMod = 0;
-        
-        switch ( attacker.getWeightClass() ) {
-          case Entity.WEIGHT_LIGHT:
-            attackerMod = 1;
-            break;
-            
-          case Entity.WEIGHT_MEDIUM:
-            attackerMod = 2;
-            break;
-            
-          case Entity.WEIGHT_HEAVY:
-            attackerMod = 3;
-            break;
-            
-          case Entity.WEIGHT_ASSAULT:
-            attackerMod = 4;
-            break;
-        }
-        
-        switch ( target.getWeightClass() ) {
-          case Entity.WEIGHT_LIGHT:
-            targetMod = 1;
-            break;
-            
-          case Entity.WEIGHT_MEDIUM:
-            targetMod = 2;
-            break;
-            
-          case Entity.WEIGHT_HEAVY:
-            targetMod = 3;
-            break;
-            
-          case Entity.WEIGHT_ASSAULT:
-            targetMod = 4;
-            break;
-        }
-        
-        mod = attackerMod - targetMod;
-      }
-      
-      return mod;
-    }
-              
+    
     /**
      * Each mech sinks the amount of heat appropriate to its current heat
      * capacity.
@@ -6153,36 +6164,7 @@ implements Runnable {
             entity.getMovementType() == Entity.MovementType.QUAD) {
                 // if this mech has 20+ damage, add another roll to the list.
                 if (entity.damageThisPhase >= 20) {
-                    if ( game.getOptions().booleanOption("maxtech_round_damage") ) {
-                      int damMod = (entity.damageThisPhase / 20);
-                      int weightMod = 0;
-                      String weightModStr = "";
-                                            
-                      switch ( entity.getWeightClass() ) {
-                        case Entity.WEIGHT_LIGHT:
-                          weightMod = 1;
-                          break;
-                          
-                        case Entity.WEIGHT_MEDIUM:
-                          weightMod = 0;
-                          break;
-                          
-                        case Entity.WEIGHT_HEAVY:
-                          weightMod = -1;
-                          break;
-                          
-                        case Entity.WEIGHT_ASSAULT:
-                          weightMod = -2;
-                          break;
-                      }
-                      
-                      if ( weightMod != 0 )
-                        weightModStr = " - " + weightMod + " weight mod";
-
-                      game.addPSR(new PilotingRollData(entity.getId(), damMod + weightMod, entity.damageThisPhase + " damage" + weightModStr));
-                    } else {              
-                      game.addPSR(new PilotingRollData(entity.getId(), 1, "20+ damage"));
-                    }
+                    game.addPSR(new PilotingRollData(entity.getId(), 1, "20+ damage"));
                 }
             }
         }
@@ -6252,7 +6234,7 @@ implements Runnable {
         // add all cumulative rolls, count all rolls
         Vector rolls = new Vector();
         StringBuffer reasons = new StringBuffer();
-        PilotingRollData base = entity.getBasePilotingRoll();
+        PilotingRollData base = Compute.getBasePilotingRoll(game, entity.getId());
         for (Enumeration i = game.getPSRs(); i.hasMoreElements();) {
             final PilotingRollData modifier = (PilotingRollData)i.nextElement();
             if (modifier.getEntityId() != entity.getId()) {
@@ -6345,10 +6327,6 @@ implements Runnable {
             anyRolls = true;
             for (int hit = totalHits - rollsNeeded + 1; hit <= totalHits; hit++) {
                 int roll = Compute.d6(2);
-                
-                if ( e.getCrew().getOptions().booleanOption("pain_resistance") )
-                  roll = Math.min(12, roll + 1);
-  
                 int rollTarget = Compute.getConciousnessNumber( hit );
                 phaseReport.append("\nPilot of " ).append( e.getDisplayName()
                                    ).append( " \"" ).append( e.getCrew().getName()
@@ -6385,10 +6363,6 @@ implements Runnable {
             }
             anyRolls = true;
             int roll = Compute.d6(2);
-
-            if ( e.getCrew().getOptions().booleanOption("pain_resistance") )
-              roll = Math.min(12, roll + 1);
-  
             int rollTarget = Compute.getConciousnessNumber( e.crew.getHits() );
             roundReport.append("\nPilot of " ).append( e.getDisplayName()
                                ).append( " \"" ).append( e.crew.getName()
@@ -6565,27 +6539,13 @@ implements Runnable {
                         desc += " <<<SECTION DESTROYED>>>,";
                         }
                         if (hit.getLocation() == Mech.LOC_RT || hit.getLocation() == Mech.LOC_LT) {
-                            te.engineHitsThisRound += te.getGoodCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, hit.getLocation());
-                            
-                            boolean engineExploded = false;
-                            StringBuffer descBuffer = new StringBuffer();
-                            
-                            if ( te.engineHitsThisRound >= 2 ) {
-                              engineExploded = checkEngineExplosion(te, descBuffer);
-                            }
-                            
-                            desc += descBuffer.toString();
-                            
-                            if ( !engineExploded ) {
-                              int numEngineHits = 0;
-                              numEngineHits += te.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_CT);
-                              numEngineHits += te.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_RT);
-                              numEngineHits += te.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_LT);
-                              
-                              if ( numEngineHits > 2  ) {
-                                  // third engine hit
-                                  phaseReport.append(destroyEntity(te, "engine destruction"));
-                              }
+                            int numEngineHits = 0;
+                            numEngineHits += te.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_CT);
+                            numEngineHits += te.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_RT);
+                            numEngineHits += te.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_LT);
+                            if (numEngineHits > 2) {
+                                // third engine hit
+                                phaseReport.append(destroyEntity(te, "engine destruction"));
                             }
                         }
                     }
@@ -6595,24 +6555,10 @@ implements Runnable {
                 if (te.getInternal(hit) <= 0) {
                     nextHit = te.getTransferLocation(hit);
                     if (nextHit.getLocation() == Entity.LOC_DESTROYED) {
-                        te.engineHitsThisRound += te.getGoodCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, hit.getLocation());
-                        
-                        boolean engineExploded = false;
-                        StringBuffer descBuffer = new StringBuffer();
-                        
-                        if ( te.engineHitsThisRound >= 2 ) {
-                          engineExploded = checkEngineExplosion(te, descBuffer);
-                        }
-                        
-                        desc += descBuffer.toString();
-                        
-                        if ( !engineExploded ) {
-                          // Entity destroyed.  Ammo explosions are
-                          // neither survivable nor salvagable.
-                          desc += destroyEntity(te, "damage", !ammoExplosion,
-                                                !ammoExplosion);
-                        }
-                        
+                        // Entity destroyed.  Ammo explosions are
+                        // neither survivable nor salvagable.
+                        desc += destroyEntity(te, "damage", !ammoExplosion,
+                                              !ammoExplosion);
                         // nowhere for further damage to go
                         damage = 0;
                     } else if ( nextHit.getLocation() == Entity.LOC_NONE ) {
@@ -6677,91 +6623,6 @@ implements Runnable {
         }
         
         return desc;
-    }
-    
-    /**
-     * Check to see if the entity's engine explodes
-     */
-    
-    private boolean checkEngineExplosion(Entity en, StringBuffer sbDesc) {
-      if ( !game.getOptions().booleanOption("engine_explosions") || en.rolledForEngineExplosion )
-        return false;
-      
-      int explosionBTH = 12;
-      int explosionRoll = Compute.d6(2);
-      
-      boolean didExplode = explosionRoll >= explosionBTH;
-      
-      sbDesc.append("        \n" + en.getDisplayName() + " has taken " + en.engineHitsThisRound + " engine hits this round.\n");
-      sbDesc.append("        Checking for engine explosion on BTH = " + explosionBTH + ", Roll = " + explosionRoll + "\n");
-      en.rolledForEngineExplosion = true;
-      
-      if ( !didExplode ) {
-        sbDesc.append("        Engine safety systems remain in place.\n");
-      } else {
-        sbDesc.append("        ***The safety systems on the engine fail catastrophically resulting in a cascading engine failure!\n");
-        sbDesc.append( destroyEntity(en, "engine explosion", false, false));
-        
-        //Light our hex on fire
-          final Hex curHex = game.board.getHex(en.getPosition());
-          
-          if ( (null != curHex) && !curHex.contains(Terrain.FIRE) && curHex.contains(Terrain.WOODS) ) {
-            curHex.addTerrain(new Terrain(Terrain.FIRE, 1));
-            sbDesc.append("        The hex at " + en.getPosition().x + "," + en.getPosition().y + " ignites!\n");
-            sendChangedHex(en.getPosition());
-          }
-          
-        //Nuke anyone that is in our hex
-          Enumeration entitesWithMe = game.getEntities(en.getPosition());
-          Hashtable entitesHit = new Hashtable();
-          
-          entitesHit.put(en, en);
-          
-          while ( entitesWithMe.hasMoreElements() ) {
-            Entity entity = (Entity)entitesWithMe.nextElement();
-            
-            if ( entity.equals(en) )
-              continue;
-              
-            sbDesc.append(destroyEntity(entity, "engine explosion proximity", false, false));
-            
-            entitesHit.put(entity, entity);
-          }
-          
-        //Now we damage people near us
-          int engineRating = ((Mech)en).engineRating();
-          int[] damages = { 999, (engineRating / 10), (engineRating / 20), (engineRating / 40) };
-          
-          Vector entites = game.getEntitiesVector();
-          
-          for ( int i = 0; i < entites.size(); i++ ) {
-            Entity entity = (Entity)entites.elementAt(i);
-            
-            if ( entitesHit.containsKey(entity) )
-              continue;
-            
-            if ( entity.isDoomed() || entity.isDestroyed() )
-              continue;
-            
-            int range = en.getPosition().distance(entity.getPosition());
-            
-            if ( range > 3 )
-              continue;
-              
-            int damage = damages[range];
-            
-            sbDesc.append("        \n" + entity.getDisplayName() + " is hit for " + damage + " damage!");
-
-            while (damage > 0) {
-                int cluster = Math.min(5, damage);
-                HitData hit = entity.rollHitLocation(ToHitData.HIT_NORMAL, Compute.targetSideTable(en, entity));
-                sbDesc.append(damageEntity(entity, hit, cluster));
-                damage -= cluster;
-            }
-          }
-      }
-      
-      return didExplode;
     }
     
     /**
@@ -6888,27 +6749,13 @@ implements Runnable {
                                 desc += "\n*** " + en.getDisplayName() + " PILOT KILLED! ***";
                                 break;
                             case Mech.SYSTEM_ENGINE :
-                                en.engineHitsThisRound++;
-                                
-                                boolean engineExploded = false;
-                                StringBuffer descBuffer = new StringBuffer();
-                                
-                                if ( en.engineHitsThisRound >= 2 ) {
-                                  engineExploded = checkEngineExplosion(en, descBuffer);
-                                }
-                                
-                                desc += descBuffer.toString();
-
-                                if ( !engineExploded ) {
-                                  int numEngineHits = 0;
-                                  numEngineHits += en.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_CT);
-                                  numEngineHits += en.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_RT);
-                                  numEngineHits += en.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_LT);
-  
-                                  if ( numEngineHits > 2 ) {
-                                      // third engine hit
-                                      desc += destroyEntity(en, "engine destruction");
-                                  }
+                                int numEngineHits = 0;
+                                numEngineHits += en.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_CT);
+                                numEngineHits += en.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_RT);
+                                numEngineHits += en.getHitCriticals(CriticalSlot.TYPE_SYSTEM, Mech.SYSTEM_ENGINE, Mech.LOC_LT);
+                                if (numEngineHits > 2) {
+                                    // third engine hit
+                                    desc += destroyEntity(en, "engine destruction");
                                 }
                                 break;
                             case Mech.SYSTEM_GYRO :
@@ -7197,7 +7044,7 @@ implements Runnable {
         desc.append(damageEntity(en, new HitData(loc), damage, true));
         desc.append("\n");
         if (!en.isDoomed() && !en.isDestroyed()) {
-            desc.append(damageCrew(en, en.getCrew().getOptions().booleanOption("pain_resistance") ? 1 : 2));
+            desc.append(damageCrew(en, 2));
             desc.append("\n");
         }
         
@@ -8336,6 +8183,22 @@ implements Runnable {
     }
  
     /**
+     * Calculate the piloting skill roll modifier, based upon the number
+     * of hexes moved this phase.
+     */
+    private int getMovementPSRModifier( int distance ) {
+        if ( distance > 10 ) // 11+ hexes
+            return 4;
+        else if ( distance > 7 ) // 8-10 hexes
+            return 2;
+        else if ( distance > 4 ) // 5-7 hexes
+            return 1;
+        else if ( distance > 2 ) // 3-4 hexes
+            return 0;
+        return -1; // 0-2 hexes
+    }
+
+    /**
      * Process a packet
      */
     synchronized void handle(int connId, Packet packet) {
@@ -8537,7 +8400,36 @@ implements Runnable {
                                       String why ) {
 
         // Need to roll based on building type.
-        PilotingRollData psr = entity.rollMovementInBuilding(bldg, distance, why);
+        PilotingRollData psr = null;
+        switch ( bldg.getType() ) {
+        case Building.LIGHT:
+            psr = new PilotingRollData
+                ( entity.getId(), 0, why + " Light " + bldg.getName() );
+            break;
+        case Building.MEDIUM:
+            psr = new PilotingRollData
+                ( entity.getId(), 1, why + " Medium " + bldg.getName() );
+            break;
+        case Building.HEAVY:
+            psr = new PilotingRollData
+                ( entity.getId(), 2, why + " Heavy " + bldg.getName() );
+            break;
+        case Building.HARDENED:
+            psr = new PilotingRollData
+                ( entity.getId(), 5, why + " Hardened " + bldg.getName() );
+            break;
+        }
+
+        // Modify the roll by the distance moved so far.      
+        if (distance >= 3 && distance <= 4) {
+            psr.addModifier(1, "moved 3-4 hexes");
+        } else if (distance >= 5 && distance <= 6) {
+            psr.addModifier(2, "moved 5-6 hexes");
+        } else if (distance >= 7 && distance <= 9) {
+            psr.addModifier(3, "moved 7-9 hexes");
+        } else if (distance >= 10) {
+            psr.addModifier(4, "moved 10+ hexes");
+        }
 
         // Did the entity make the roll?
         if ( !doSkillCheckWhileMoving( entity, lastPos,
@@ -8889,7 +8781,8 @@ implements Runnable {
                         // ASSUMPTION: PSR to avoid pilot damage
                         // should use mods for entity damage and
                         // 20+ points of collapse damage (if any).
-                        PilotingRollData psr = entity.getBasePilotingRoll();
+                        PilotingRollData psr = Compute.getBasePilotingRoll
+                            ( this.game, entity.getId() );
                         if ( damage >= 20 ) {
                             psr.addModifier( 1, "20+ damage" );
                         }

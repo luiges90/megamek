@@ -15,12 +15,15 @@
 
 package megamek.server;
 
-import java.util.*;
-import megamek.common.*;
-
 import java.io.File;
 import java.io.FileInputStream;
-import megamek.common.options.GameOption;
+import java.util.NoSuchElementException;
+import java.util.Properties;
+import java.util.StringTokenizer;
+import java.util.Vector;
+import java.util.Enumeration;
+
+import megamek.common.*;
 
 public class ScenarioLoader 
 {
@@ -161,13 +164,6 @@ public class ScenarioLoader
                     int nBlocks = Integer.parseInt(s);
                     m_vDamagePlans.addElement(new DamagePlan(e, nBlocks));
                 }
-                
-                //Check for advantages
-                  s = p.getProperty("Unit_" + sFaction + "_" + i + "_Advantages");
-                  if ( null != s ) {
-                    parseAdvantages(e, s);
-                  }
-                  
                 vEntities.addElement(e);
             }
         }        
@@ -199,23 +195,6 @@ public class ScenarioLoader
             e.printStackTrace();
             throw new Exception("Unparseable entity line: " + s + "\n   Unable to load mech: " + e.getMessage());
         }
-    }
-    
-    private void parseAdvantages(Entity entity, String adv) {
-      StringTokenizer st = new StringTokenizer(adv);
-      
-      while ( st.hasMoreTokens() ) {
-        String curAdv = st.nextToken();
-        
-        GameOption option = entity.getCrew().getOptions().getOption(curAdv);
-       
-        if ( null == option ) {
-          System.out.println("Ignoring invalid pilot advantage: " + curAdv);
-        } else {
-          System.out.println("Adding pilot advantage '" + curAdv + "' to " + entity.getDisplayName());
-          option.setValue(true);
-        }
-      }
     }
     
     private int findIndex(String[] sa, String s)
