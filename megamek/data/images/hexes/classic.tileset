@@ -259,6 +259,8 @@ super * "road:2:61" "" "fluff/road_trees_61.gif"
 super * "road:2:62" "" "fluff/road_trees_62.gif"
 super * "road:2:63" "" "fluff/road_trees_63.gif"
 
+super * "building:5;bldg_elev:1;bldg_cf:*" "" "fluff/road_trees_55.gif"
+
 super * "building:4;bldg_elev:1;bldg_cf:*" "" "singlehex/hardened_1.gif"
 super * "building:4;bldg_elev:2;bldg_cf:*" "" "singlehex/hardened_2.gif"
 super * "building:4;bldg_elev:3;bldg_cf:*" "" "singlehex/hardened_3.gif"
